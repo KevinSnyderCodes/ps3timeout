@@ -3,6 +3,11 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <string.h>
+#include <libudev.h>
+#include <cstdlib>
+#include <ctime>
+#include <regex>
+#include <fstream>
 #include <iostream>
 using namespace std;
 
@@ -21,40 +26,156 @@ using namespace std;
  * - Controller disconnected by user: stop daemon logic for that device
  */
 
-int main (int argc, char **argv)
+struct stick {
+  int x;
+  int y;
+};
+
+struct controller {
+  // b values are >1 when any face button (except the PS
+  // button), shoulder button, or stick is pressed/clicked.
+  int b1;
+  int b2;
+  int b3;
+  // l and r are the position of the left and right stick.
+  stick l;
+  stick r;
+  // These values are pressure sensitive.
+  int up;
+  int right;
+  int down;
+  int left;
+  int l2;
+  int r2;
+  int l1;
+  int r1;
+  int triangle;
+  int circle;
+  int cross;
+  int square;
+
+  controller(unsigned char buf[128], int deadzone = 0)
+  {
+    this->b1 = buf[3];
+    this->b2 = buf[4];
+    this->b3 = buf[5];
+    this->l.x = buf[7] - 128;
+    this->l.y = buf[8] - 128;
+    this->r.x = buf[9] - 128;
+    this->r.y = buf[10] - 128;
+    this->up = buf[15];
+    this->right = buf[16];
+    this->down = buf[17];
+    this->left = buf[18];
+    this->l2 = buf[19];
+    this->r2 = buf[20];
+    this->l1 = buf[21];
+    this->r1 = buf[22];
+    this->triangle = buf[23];
+    this->circle = buf[24];
+    this->cross = buf[25];
+    this->square = buf[26];
+    // Adjust for deadzone
+    if (inDeadzone(this->l, deadzone))
+    {
+      this->l.x = 0;
+      this->l.y = 0;
+    }
+    if (inDeadzone(this->r, deadzone))
+    {
+      this->r.x = 0;
+      this->r.y = 0;
+    }
+  }
+  bool isActive()
+  {
+    return this->b1 != 0 || this->b2 != 0 || this->b3 != 0 ||
+           this->l.x != 0 || this->l.y != 0 ||
+           this->r.x != 0 || this->r.y != 0;
+  }
+private:
+  bool inRange(int val, int min, int max)
+  {
+    if (min > max)
+    {
+      swap(min, max);
+    }
+    return min < val && val < max;
+  }
+  bool inRange(int val, int range)
+  {
+    range = abs(range);
+    return inRange(val, -range, range);
+  }
+  bool inDeadzone(stick s, int deadzone)
+  {
+    return inRange(s.x, deadzone) && inRange(s.y, deadzone);
+  }
+};
+
+void watch_controller(string node)
 {
+  // Get device name
+  regex r_device("^\\/dev\\/(.*)$");
+  smatch m_device;
+  regex_match(node, m_device, r_device);
+  string device = m_device.str(1);
+  cout << device << endl;
+
+  // Get MAC address
+  ifstream f("/sys/class/hidraw/" + device + "/device/uevent");
+  if (!f.good())
+  {
+    cout << "Error opening uevent file!" << endl;
+    return;
+  }
+  stringstream buf_file;
+  buf_file << f.rdbuf();
+  regex r_addr("(^|\\n)HID_UNIQ=(.*)(\\n|$)");
+  smatch m_addr;
+  string uevent = buf_file.str();
+  if (!regex_search(uevent, m_addr, r_addr))
+  {
+    cout << "MAC address not found for device " << device << endl;
+    return;
+  }
+  string addr = m_addr.str(2);
+
+  // Check if device is PS3 controller
+  char buf_cmd[128];
+  string cmd_out = "";
+  string cmd = "hcitool name " + addr;
+  cout << cmd << endl;
+  shared_ptr<FILE> pipe(popen(cmd.c_str(), "r"), pclose);
+  if (!pipe)
+  {
+    cout << "Failed to pipe command output" << endl;
+    return;
+  }
+  while (!feof(pipe.get()))
+  {
+    if (fgets(buf_cmd, 128, pipe.get()) != nullptr)
+    {
+      cmd_out += buf_cmd;
+    }
+  }
+  cout << cmd_out << cmd_out.length() << endl;
+  if (cmd_out != "PLAYSTATION(R)3 Controller\n")
+  {
+    cout << "Device " << device << " is not a PS3 controller" << endl;
+    return;
+  }
+
   // Open device
-  char *device = "/dev/hidraw0";
-  int fd = open(device, O_RDONLY);
+  int fd = open(node.c_str(), O_RDONLY);
   cout << fd << endl;
 
-  // Get physical address
-  //
-  // Unfortunately this gives us the MAC address of the bluetooth adapter,
-  // not of the PS3 controller. So we will need to either:
-  //
-  // 1. Get the PS3 controller MAC address another way
-  // 2. Find a different way entirely to disconnect out hidraw device,
-  //    as long as it results in the controller turning off.
-  //
-  // The hidraw API does not offer an ioctl method to disconnect:
-  // https://github.com/intel/edison-linux/blob/master/Documentation/hid/hidraw.txt
-  //
-  // The controller's MAC address can be found at:
-  // /sys/class/hidraw/hidraw0/device/uevent
-  // (label HID_UNIQ)
-  char buf_addr[256];
-  int res = ioctl(fd, HIDIOCGRAWPHYS(256), buf_addr);
-  cout << res << endl;
-  cout << buf_addr << endl;
-
-  // Read from device
-  unsigned char buf_old[128];
+  // Check for activity
+  long lastActive = time(0);
   while (true)
   {
     unsigned char buf_read[128];
     int nr = read(fd, buf_read, sizeof(buf_read));
-    cout << nr << endl;
     if (nr == 49)
     {
       for (int i = 50; i > 0; i--)
@@ -62,17 +183,67 @@ int main (int argc, char **argv)
         buf_read[i] = buf_read[i-1];
       }
     }
-    // Output changed values
-    for (int i = 0; i < 128; i++)
+    controller hid(buf_read, 10);
+    if (hid.isActive())
     {
-      if (buf_read[i] != buf_old[i])
+      lastActive = time(0);
+    }
+    else if (lastActive + 5 < time(0))
+    {
+      cout << "Timeout!" << endl;
+      string cmd = "hcitool dc " + addr;
+      system(cmd.c_str());
+      return;
+    }
+  }
+}
+
+int main (int argc, char **argv)
+{
+  // Get hidraw devices
+  struct udev *udev = udev_new();
+  if (!udev)
+  {
+    cout << "Can't create udev" << endl;
+  }
+  struct udev_monitor *mon = udev_monitor_new_from_netlink(udev, "udev");
+  udev_monitor_filter_add_match_subsystem_devtype(mon, "hidraw", NULL);
+  udev_monitor_enable_receiving(mon);
+  int fd_mon = udev_monitor_get_fd(mon);
+
+  while (true)
+  {
+    fd_set fds;
+    struct timeval tv;
+    int ret;
+
+    FD_ZERO(&fds);
+    FD_SET(fd_mon, &fds);
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+
+    ret = select(fd_mon+1, &fds, NULL, NULL, &tv);
+
+    if (ret > 0 && FD_ISSET(fd_mon, &fds))
+    {
+      struct udev_device *dev = udev_monitor_receive_device(mon);
+      if (dev)
       {
-        // cout << "Value " << i << " changed: " << (int)buf_read[i] << endl;
+        string node = udev_device_get_devnode(dev);
+        string subsystem = udev_device_get_subsystem(dev);
+        string action = udev_device_get_action(dev);
+        cout << "Node: " << node << endl;
+        cout << "Subsystem: " << subsystem << endl;
+        cout << "Action: " << action << endl;
+        if (action == "add")
+        {
+          watch_controller(udev_device_get_devnode(dev));
+        }
+        udev_device_unref(dev);
       }
     }
-    cout << (int)buf_read[15] << endl;
-    memcpy(buf_old, buf_read, 128*sizeof(char));
-    // Don't use usleep! Causes latest buf_read values to be delayed.
-    // usleep(1000000);
   }
+
+  return 0;
+
 }
