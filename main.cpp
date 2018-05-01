@@ -23,6 +23,7 @@ using namespace std;
  * GOTCHAS
  * - New controller connected
  *   libudev has a monitoring interface: http://www.signal11.us/oss/udev/
+ * - Controller(s) already connected when daemon started
  * - Controller disconnected by user: stop daemon logic for that device
  */
 
@@ -195,6 +196,7 @@ void watch_controller(string node)
       system(cmd.c_str());
       return;
     }
+    usleep(1000*1000);
   }
 }
 
@@ -242,6 +244,7 @@ int main (int argc, char **argv)
         udev_device_unref(dev);
       }
     }
+    usleep(1000*1000);
   }
 
   return 0;
