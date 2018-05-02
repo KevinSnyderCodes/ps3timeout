@@ -9,6 +9,8 @@
 #include <regex>
 #include <fstream>
 #include <iostream>
+#include <thread>
+#include <map>
 using namespace std;
 
 /**
@@ -26,6 +28,10 @@ using namespace std;
  * - Controller(s) already connected when daemon started
  * - Controller disconnected by user: stop daemon logic for that device
  */
+
+const int TIMEOUT_SECONDS = 15;
+
+map<string, bool> device_connected;
 
 struct stick {
   int x;
@@ -116,6 +122,7 @@ private:
 
 void watch_controller(string node)
 {
+  cout << node << endl;
   // Get device name
   regex r_device("^\\/dev\\/(.*)$");
   smatch m_device;
@@ -175,6 +182,10 @@ void watch_controller(string node)
   long lastActive = time(0);
   while (true)
   {
+    if (!device_connected[node])
+    {
+      return;
+    }
     unsigned char buf_read[128];
     int nr = read(fd, buf_read, sizeof(buf_read));
     if (nr == 49)
@@ -189,19 +200,28 @@ void watch_controller(string node)
     {
       lastActive = time(0);
     }
-    else if (lastActive + 5 < time(0))
+    else if (lastActive + TIMEOUT_SECONDS < time(0))
     {
       cout << "Timeout!" << endl;
       string cmd = "hcitool dc " + addr;
       system(cmd.c_str());
       return;
     }
+    cout << "watch_controller" << endl;
     usleep(1000*1000);
   }
 }
 
 int main (int argc, char **argv)
 {
+  // Set timeout
+  int timeout = 60;
+  if (argc > 1)
+  {
+    timeout = atoi(argv[1]);
+  }
+  cout << timeout << endl;
+
   // Get hidraw devices
   struct udev *udev = udev_new();
   if (!udev)
@@ -239,11 +259,17 @@ int main (int argc, char **argv)
         cout << "Action: " << action << endl;
         if (action == "add")
         {
-          watch_controller(udev_device_get_devnode(dev));
+          device_connected[node] = true;
+          thread(watch_controller, node).detach();
+        }
+        else if (action == "remove")
+        {
+          device_connected[node] = false;
         }
         udev_device_unref(dev);
       }
     }
+    cout << "main" << endl;
     usleep(1000*1000);
   }
 
