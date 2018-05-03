@@ -29,8 +29,7 @@ using namespace std;
  * - Controller disconnected by user: stop daemon logic for that device
  */
 
-const int TIMEOUT_SECONDS = 15;
-
+int timeout;
 map<string, bool> device_connected;
 
 struct stick {
@@ -200,7 +199,7 @@ void watch_controller(string node)
     {
       lastActive = time(0);
     }
-    else if (lastActive + TIMEOUT_SECONDS < time(0))
+    else if (lastActive + timeout < time(0))
     {
       cout << "Timeout!" << endl;
       string cmd = "hcitool dc " + addr;
@@ -215,7 +214,7 @@ void watch_controller(string node)
 int main (int argc, char **argv)
 {
   // Set timeout
-  int timeout = 60;
+  timeout = 60;
   if (argc > 1)
   {
     timeout = atoi(argv[1]);
@@ -274,5 +273,4 @@ int main (int argc, char **argv)
   }
 
   return 0;
-
 }
